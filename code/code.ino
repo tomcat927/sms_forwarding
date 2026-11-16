@@ -7,6 +7,7 @@
 #include <Preferences.h>
 #include <pdulib.h>
 #define FIRMWARE_VERSION "1.1.0-ota"
+#define FIRMWARE_BUILD __DATE__ " " __TIME__
 #define ENABLE_SMTP
 #define ENABLE_DEBUG
 #include <ReadyMail.h>
@@ -692,7 +693,7 @@ function up(){
 void handleOtaPage() {
   if (!checkAuth()) return;
   String html = String(otaPage);
-  html.replace("%VERSION%", FIRMWARE_VERSION);
+  html.replace("%VERSION%", String(FIRMWARE_VERSION) + " (" + FIRMWARE_BUILD + ")");
   server.send(200, "text/html; charset=utf-8", html);
 }
 
@@ -744,7 +745,7 @@ void handleRoot() {
   html.replace("%SMTP_PASS%", config.smtpPass);
   html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
   html.replace("%ADMIN_PHONE%", config.adminPhone);
-  html.replace("</body>", "<p style=\"text-align:center;margin:18px\"><a href=\"/ota\">固件升级 (OTA)</a></p></body>");
+  html.replace("</body>", "<p style=\"text-align:center;margin:18px\"><a href=\"/ota\">固件升级 (OTA)</a> · 版本 " + String(FIRMWARE_VERSION) + " (" + FIRMWARE_BUILD + ")</p></body>");
   
   // 生成推送通道HTML
   String channelsHtml = "";
@@ -2425,6 +2426,7 @@ void setup() {
   // USB 串口日志
   Serial.begin(115200);
   delay(1500);  // 等 USB CDC 稳定
+  Serial.printf("固件版本: %s (%s)\n", FIRMWARE_VERSION, FIRMWARE_BUILD);
 
   // 模组串口（UART）
   Serial1.begin(115200, SERIAL_8N1, RXD, TXD);
