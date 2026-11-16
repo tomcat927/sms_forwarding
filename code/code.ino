@@ -3,8 +3,10 @@
 #include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <WebServer.h>
+#include <Update.h>
 #include <Preferences.h>
 #include <pdulib.h>
+#define FIRMWARE_VERSION "1.1.0-ota"
 #define ENABLE_SMTP
 #define ENABLE_DEBUG
 #include <ReadyMail.h>
@@ -627,6 +629,107 @@ bool checkAuth() {
   return true;
 }
 
+// ==================== OTA 固件升级 ====================
+// 说明：分区表见同目录 partitions.csv（2MB APP x2，无文件系统）。
+// 首次从原 1.25MB 分区切换过来必须用 USB 刷写，之后即可通过 /ota 页面升级。
+
+const char* otaPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>固件升级</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:720px;margin:0 auto;padding:16px;background:#f5f7fa;color:#222}
+.card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:16px}
+h1{font-size:20px;margin:0 0 12px}
+.btn{background:#1976d2;color:#fff;border:0;border-radius:6px;padding:10px 18px;font-size:15px;cursor:pointer}
+.btn:disabled{opacity:.6;cursor:default}
+#bar{height:10px;background:#e3e8ef;border-radius:5px;overflow:hidden;margin-top:14px;display:none}
+#bar>div{height:100%;width:0;background:#1976d2;transition:width .2s}
+#msg{margin-top:12px;font-size:14px;line-height:1.6}
+.tip{color:#666;font-size:13px;line-height:1.7}
+a{color:#1976d2}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>固件升级 (OTA)</h1>
+<p class="tip">当前版本：<b>%VERSION%</b><br>选择 .bin 固件文件上传，设备写完后会自动重启。上传期间请勿断电。</p>
+<input type="file" id="file" accept=".bin">
+<p><button class="btn" id="btn" onclick="up()">开始上传</button></p>
+<div id="bar"><div id="fill"></div></div>
+<div id="msg"></div>
+</div>
+<div class="card">
+<p class="tip">注意：首次从 1.25MB 分区切换到 2MB 分区必须用 USB 刷写一次，此后才可通过本页升级。<br><a href="/">返回配置页</a></p>
+</div>
+<script>
+function up(){
+  var f=document.getElementById('file').files[0];
+  if(!f){alert('请先选择固件文件');return;}
+  var btn=document.getElementById('btn'),bar=document.getElementById('bar'),fill=document.getElementById('fill'),msg=document.getElementById('msg');
+  btn.disabled=true;bar.style.display='block';msg.textContent='上传中...';
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST','/update');
+  xhr.upload.onprogress=function(e){
+    if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);fill.style.width=p+'%';msg.textContent='上传中 '+p+'%';}
+  };
+  xhr.onload=function(){
+    if(xhr.status===200&&xhr.responseText.indexOf('OK')===0){msg.textContent='升级成功，设备重启中，约 10 秒后刷新页面';}
+    else{msg.textContent=xhr.responseText||'升级失败';btn.disabled=false;}
+  };
+  xhr.onerror=function(){msg.textContent='上传失败，请重试';btn.disabled=false;};
+  var fd=new FormData();fd.append('firmware',f);
+  xhr.send(fd);
+}
+</script>
+</body>
+</html>
+)rawliteral";
+
+void handleOtaPage() {
+  if (!checkAuth()) return;
+  String html = String(otaPage);
+  html.replace("%VERSION%", FIRMWARE_VERSION);
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleOtaUpload() {
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    if (!checkAuth()) return;
+    Serial.printf("OTA: 开始接收 %s\n", upload.filename.c_str());
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      Serial.printf("OTA: 接收完成 %u 字节\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    Serial.println("OTA: 上传已中止");
+  }
+}
+
+void handleOtaResult() {
+  if (!checkAuth()) return;
+  bool ok = !Update.hasError();
+  server.send(200, "text/plain; charset=utf-8", ok ? "OK 升级成功，设备即将重启" : "FAIL 升级失败");
+  if (ok) {
+    delay(1000);
+    ESP.restart();
+  }
+}
+
 // 处理配置页面请求
 void handleRoot() {
   if (!checkAuth()) return;
@@ -641,6 +744,7 @@ void handleRoot() {
   html.replace("%SMTP_PASS%", config.smtpPass);
   html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
   html.replace("%ADMIN_PHONE%", config.adminPhone);
+  html.replace("</body>", "<p style=\"text-align:center;margin:18px\"><a href=\"/ota\">固件升级 (OTA)</a></p></body>");
   
   // 生成推送通道HTML
   String channelsHtml = "";
@@ -2412,6 +2516,8 @@ void setup() {
   server.on("/ping", HTTP_POST, handlePing);
   server.on("/query", handleQuery);
   server.on("/flight", handleFlightMode);
+  server.on("/ota", handleOtaPage);
+  server.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
   server.begin();
   Serial.println("HTTP服务器已启动");
   
