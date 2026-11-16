@@ -6,8 +6,6 @@
 #include <Update.h>
 #include <Preferences.h>
 #include <pdulib.h>
-#define FIRMWARE_VERSION "1.1.0-ota"
-#define FIRMWARE_BUILD __DATE__ " " __TIME__
 #define ENABLE_SMTP
 #define ENABLE_DEBUG
 #include <ReadyMail.h>
@@ -174,6 +172,27 @@ void loadConfig() {
   
   preferences.end();
   Serial.println("配置已加载");
+}
+
+// 版本号直接使用编译时间，格式：2026-11-17 01-57-48-ota
+String pad2(int v) {
+  return v < 10 ? String("0") + String(v) : String(v);
+}
+
+String getFirmwareVersion() {
+  static const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+  const char* d = __DATE__;
+  const char* t = __TIME__;
+  int mi = 1;
+  for (int i = 0; i < 12; i++) {
+    if (d[0] == months[i][0] && d[1] == months[i][1] && d[2] == months[i][2]) { mi = i + 1; break; }
+  }
+  int day = (d[4] == ' ' ? 0 : (d[4] - '0') * 10) + (d[5] - '0');
+  int year = (d[7] - '0') * 1000 + (d[8] - '0') * 100 + (d[9] - '0') * 10 + (d[10] - '0');
+  int hh = (t[0] - '0') * 10 + (t[1] - '0');
+  int mm = (t[3] - '0') * 10 + (t[4] - '0');
+  int ss = (t[6] - '0') * 10 + (t[7] - '0');
+  return String(year) + "-" + pad2(mi) + "-" + pad2(day) + " " + pad2(hh) + "-" + pad2(mm) + "-" + pad2(ss) + "-ota";
 }
 
 // 检查推送通道是否有效配置
@@ -693,7 +712,7 @@ function up(){
 void handleOtaPage() {
   if (!checkAuth()) return;
   String html = String(otaPage);
-  html.replace("%VERSION%", String(FIRMWARE_VERSION) + " (" + FIRMWARE_BUILD + ")");
+  html.replace("%VERSION%", getFirmwareVersion());
   server.send(200, "text/html; charset=utf-8", html);
 }
 
@@ -745,7 +764,7 @@ void handleRoot() {
   html.replace("%SMTP_PASS%", config.smtpPass);
   html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
   html.replace("%ADMIN_PHONE%", config.adminPhone);
-  html.replace("</body>", "<p style=\"text-align:center;margin:18px\"><a href=\"/ota\">固件升级 (OTA)</a> · 版本 " + String(FIRMWARE_VERSION) + " (" + FIRMWARE_BUILD + ")</p></body>");
+  html.replace("</body>", "<p style=\"text-align:center;margin:18px\"><a href=\"/ota\">固件升级 (OTA)</a> · 版本 " + getFirmwareVersion() + "</p></body>");
   
   // 生成推送通道HTML
   String channelsHtml = "";
@@ -2426,7 +2445,7 @@ void setup() {
   // USB 串口日志
   Serial.begin(115200);
   delay(1500);  // 等 USB CDC 稳定
-  Serial.printf("固件版本: %s (%s)\n", FIRMWARE_VERSION, FIRMWARE_BUILD);
+  Serial.printf("固件版本: %s\n", getFirmwareVersion().c_str());
 
   // 模组串口（UART）
   Serial1.begin(115200, SERIAL_8N1, RXD, TXD);
