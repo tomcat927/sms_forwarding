@@ -10,6 +10,7 @@
 #define ENABLE_DEBUG
 #include <ReadyMail.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
 #include <mbedtls/md.h>  // 用于钉钉签名的HMAC-SHA256
 #include <base64.h>      // Base64编码
 
@@ -60,6 +61,7 @@ struct Config {
   PushChannel pushChannels[MAX_PUSH_CHANNELS];  // 多推送通道
   String webUser;      // Web管理账号
   String webPass;      // Web管理密码
+  String otaUrl;       // 远程固件地址（httpUpdate）
 };
 
 // 默认Web管理账号密码
@@ -119,6 +121,7 @@ void saveConfig() {
   preferences.putString("adminPhone", config.adminPhone);
   preferences.putString("webUser", config.webUser);
   preferences.putString("webPass", config.webPass);
+  preferences.putString("otaUrl", config.otaUrl);
   
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -147,6 +150,7 @@ void loadConfig() {
   config.adminPhone = preferences.getString("adminPhone", "");
   config.webUser = preferences.getString("webUser", DEFAULT_WEB_USER);
   config.webPass = preferences.getString("webPass", DEFAULT_WEB_PASS);
+  config.otaUrl = preferences.getString("otaUrl", "");
   
   // 加载推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -683,9 +687,23 @@ a{color:#1976d2}
 <div id="msg"></div>
 </div>
 <div class="card">
+<h1>远程升级</h1>
+<form method="post" action="/setota">
+<p class="tip">固件地址（设备自己通过 HTTP 拉取）：</p>
+<input type="url" name="otaUrl" value="%OTA_URL%" placeholder="http&#58;&#47;&#47;192.168.123.219&#58;8080/firmware.bin" style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ddd;border-radius:6px">
+<p><button class="btn" type="submit">保存地址</button> <button class="btn" type="button" onclick="checkUpd()">立即检查更新</button></p>
+</form>
+<div id="rmsg" class="tip"></div>
+</div>
+<div class="card">
 <p class="tip">注意：首次从 1.25MB 分区切换到 2MB 分区必须用 USB 刷写一次，此后才可通过本页升级。<br><a href="/">返回配置页</a></p>
 </div>
 <script>
+function checkUpd(){
+  var m=document.getElementById("rmsg");
+  m.textContent="正在从服务器检查更新...";
+  fetch("/checkupdate").then(function(r){return r.text();}).then(function(t){m.textContent=t;}).catch(function(){m.textContent="请求失败";});
+}
 function up(){
   var f=document.getElementById('file').files[0];
   if(!f){alert('请先选择固件文件');return;}
@@ -713,6 +731,7 @@ void handleOtaPage() {
   if (!checkAuth()) return;
   String html = String(otaPage);
   html.replace("%VERSION%", getFirmwareVersion());
+  html.replace("%OTA_URL%", config.otaUrl);
   server.send(200, "text/html; charset=utf-8", html);
 }
 
@@ -747,6 +766,40 @@ void handleOtaResult() {
   if (ok) {
     delay(1000);
     ESP.restart();
+  }
+}
+
+void handleSetOtaUrl() {
+  if (!checkAuth()) return;
+  config.otaUrl = server.arg("otaUrl");
+  config.otaUrl.trim();
+  saveConfig();
+  server.sendHeader("Location", "/ota");
+  server.send(303, "text/plain", "saved");
+}
+
+void handleCheckUpdate() {
+  if (!checkAuth()) return;
+  if (config.otaUrl.length() == 0) {
+    server.send(400, "text/plain; charset=utf-8", "未配置远程固件地址");
+    return;
+  }
+  Serial.printf("OTA: 从 %s 检查更新\n", config.otaUrl.c_str());
+  WiFiClient client;
+  httpUpdate.rebootOnUpdate(false);
+  t_httpUpdate_return ret = httpUpdate.update(client, config.otaUrl);
+  if (ret == HTTP_UPDATE_OK) {
+    server.send(200, "text/plain; charset=utf-8", "OK 升级成功，设备即将重启");
+    delay(500);
+    ESP.restart();
+  } else if (ret == HTTP_UPDATE_NO_UPDATES) {
+    server.send(200, "text/plain; charset=utf-8", "NO_UPDATE 服务器固件与当前相同");
+  } else {
+    String msg = "FAIL ";
+    msg += String(httpUpdate.getLastError());
+    msg += " ";
+    msg += httpUpdate.getLastErrorString();
+    server.send(200, "text/plain; charset=utf-8", msg);
   }
 }
 
@@ -2539,6 +2592,8 @@ void setup() {
   server.on("/flight", handleFlightMode);
   server.on("/ota", handleOtaPage);
   server.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
+  server.on("/setota", HTTP_POST, handleSetOtaUrl);
+  server.on("/checkupdate", handleCheckUpdate);
   server.begin();
   Serial.println("HTTP服务器已启动");
   
